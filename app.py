@@ -11,64 +11,29 @@ import os
 st.set_page_config(page_title="Zelflerende Boekhoud Agent 2026", layout="wide", page_icon="🏦")
 MODEL_FILE = 'trained_model.joblib'
 
-# DE VOLLEDIGE LIJST MET GROOTBOEKREKENINGEN (EXACT ZOALS ZE STONDEN)
+# DE VOLLEDIGE LIJST MET GROOTBOEKREKENINGEN
 GROOTBOEK_OPTIES = [
-    # --- Inkomsten ---
-    "8000 Omzet (21% BTW)",
-    "8100 Omzet (9% BTW)",
-    "8200 Omzet (0% / Export)",
-    "8400 Overige opbrengsten",
-
-    # --- Directe Kosten (Inkoop) ---
-    "7000 Inkoopwaarde van de omzet",
-    "7100 Verzendkosten inkoop",
-
-    # --- Bedrijfskosten: Huisvesting & Kantoor ---
-    "4000 Huur kantoorruimte",
-    "4010 Gas, water, licht",
-    "4020 Schoonmaak & Onderhoud",
-    "4100 Kantoorbenodigdheden",
-    "4110 Software & SaaS abonnementen",
-    "4120 Telefoon & Internet",
-    "4130 Portokosten & Pakketten",
-
-    # --- Bedrijfskosten: Verkoop & Marketing ---
-    "4200 Marketing & Advertenties (Google/FB)",
-    "4210 Representatiekosten & Relatiegeschenken",
-    "4220 Website & Hosting",
-
-    # --- Bedrijfskosten: Auto & Vervoer ---
-    "4300 Brandstof & Laden",
-    "4310 Onderhoud & Reparaties Auto",
-    "4320 Parkeerkosten",
-    "4330 Openbaar Vervoer & Taxi",
-
-    # --- Bedrijfskosten: Algemeen ---
-    "4400 Bankkosten & Transactiefees",
-    "4410 Verzekeringen (Zakelijk)",
-    "4420 Advieskosten (Boekhouder/Juridisch)",
-    "4430 Kantinekosten & Lunches",
-    "4440 Studiekosten & Training",
-
-    # --- Balans & Privé ---
-    "0000 Inventaris & Apparatuur",
-    "1000 Bank / Kruisposten",
-    "1400 BTW Afdracht / Ontvangst",
-    "1600 Crediteuren (Openstaande facturen)",
-    "2000 Privéstortingen",
-    "2010 Privéopnamen"
+    "8000 Omzet (21% BTW)", "8100 Omzet (9% BTW)", "8200 Omzet (0% / Export)", "8400 Overige opbrengsten",
+    "7000 Inkoopwaarde van de omzet", "7100 Verzendkosten inkoop",
+    "4000 Huur kantoorruimte", "4010 Gas, water, licht", "4020 Schoonmaak & Onderhoud",
+    "4100 Kantoorbenodigdheden", "4110 Software & SaaS abonnementen", "4120 Telefoon & Internet", "4130 Portokosten & Pakketten",
+    "4200 Marketing & Advertenties (Google/FB)", "4210 Representatiekosten & Relatiegeschenken", "4220 Website & Hosting",
+    "4300 Brandstof & Laden", "4310 Onderhoud & Reparaties Auto", "4320 Parkeerkosten", "4330 Openbaar Vervoer & Taxi",
+    "4400 Bankkosten & Transactiefees", "4410 Verzekeringen (Zakelijk)", "4420 Advieskosten (Boekhouder/Juridisch)",
+    "4430 Kantinekosten & Lunches", "4440 Studiekosten & Training",
+    "0000 Inventaris & Apparatuur", "1000 Bank / Kruisposten", "1400 BTW Afdracht / Ontvangst",
+    "1600 Crediteuren (Openstaande facturen)", "2000 Privéstortingen", "2010 Privéopnamen"
 ]
 
 # --- 2. GOOGLE SHEETS CONNECTIE ---
-# Dit zorgt voor het "geheugen" van de AI
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_historical_data():
     """Haalt alle eerder opgeslagen transacties op uit Google Sheets."""
     try:
-        df = conn.read(ttl="1m") # Korte cache voor real-time gevoel
-        return df if not df.empty else pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
-    except:
+        df = conn.read(ttl="1m")
+        return df if df is not None and not df.empty else pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
+    except Exception:
         return pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
 
 # --- 3. ROBUUSTE KOLOM-MAPPER ---
@@ -111,14 +76,12 @@ def get_pipeline():
 
 # --- 5. FRONTEND UI ---
 st.title("🧠 Zelflerende Boekhoud Agent Pro")
-st.markdown("Deze AI wordt elke keer slimmer door goedgekeurde data op te slaan in Google Sheets.")
+st.markdown("---")
 
 tab1, tab2 = st.tabs(["🧠 Training & Geheugen", "🚀 Voorspellingen & Dashboard"])
 
 with tab1:
     st.header("Stap 1: Review & Leerproces")
-    
-    # Historie laden uit de cloud
     history_df = get_historical_data()
     st.info(f"Aantal transacties in AI-geheugen: **{len(history_df)}**")
 
@@ -131,9 +94,7 @@ with tab1:
         if 'Category' not in df_to_review.columns:
             df_to_review['Category'] = GROOTBOEK_OPTIES[0]
 
-        st.subheader("📝 Controleer en pas aan voor de database")
-        
-        # De interactieve editor
+        st.subheader("📝 Controleer en pas aan")
         edited_df = st.data_editor(
             df_to_review,
             column_config={
@@ -144,37 +105,30 @@ with tab1:
             width="stretch"
         )
 
-        if st.button("💾 Opslaan naar Google Sheets & AI Trainen"):
-            with st.spinner("Data wordt gesynchroniseerd..."):
-                # Combineer oude historie met nieuwe correcties
+        if st.button("💾 Opslaan & AI Trainen"):
+            with st.spinner("Data wordt opgeslagen..."):
                 updated_history = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
-                
-                # Schrijf terug naar Google Sheets
                 conn.update(data=updated_history)
                 
-                # Train model op de VOLLEDIGE nieuwe dataset
                 X = updated_history['Description'].astype(str)
                 y = updated_history['Category'].astype(str)
                 model = get_pipeline()
                 model.fit(X, y)
                 joblib.dump(model, MODEL_FILE)
-                
-                st.success("AI Geheugen bijgewerkt! Het model is nu slimmer.")
+                st.success("AI is bijgewerkt en opgeslagen in de cloud!")
 
 with tab2:
-    st.header("Stap 2: Voorspellen op nieuwe bankdata")
-    
+    st.header("Stap 2: Voorspellen")
     if not os.path.exists(MODEL_FILE) and history_df.empty:
         st.warning("⚠️ Geen kennis gevonden. Train de AI eerst in Tab 1.")
     else:
-        # Als er geen lokaal model is maar wel historie, train dan even snel
         if not os.path.exists(MODEL_FILE) and not history_df.empty:
+            # Auto-train als model ontbreekt maar data er is
             model = get_pipeline()
             model.fit(history_df['Description'].astype(str), history_df['Category'].astype(str))
             joblib.dump(model, MODEL_FILE)
 
         predict_file = st.file_uploader("Upload bankbestand voor analyse", type="csv", key="pred")
-        
         if predict_file:
             df_new_raw = pd.read_csv(predict_file)
             df_mapped = standardize_df(df_new_raw)
@@ -182,10 +136,5 @@ with tab2:
             if st.button("🚀 Voorspel Grootboekrekeningen"):
                 model = joblib.load(MODEL_FILE)
                 df_mapped['AI_Voorspelling'] = model.predict(df_mapped['Description'].astype(str))
-                
                 st.success("Analyse voltooid!")
                 st.dataframe(df_mapped, width="stretch")
-                
-                # Download knop
-                csv = df_mapped.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Rapport", csv, "ai_boekhouding.csv")
