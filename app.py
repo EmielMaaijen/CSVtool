@@ -1,107 +1,80 @@
 import streamlit as st
 import pandas as pd
-from groq import Groq
-import json
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.pipeline import Pipeline
+import joblib
+import os
 
-# --- 1. CONFIGURATION ---
-st.set_page_config(page_title="Universal Wealth Agent", layout="wide")
+# --- CONFIGURATIE ---
+st.set_page_config(page_title="Slimme Bank Agent", layout="wide")
+MODEL_FILE = 'trained_model.joblib'
 
-# Top 50 Dutch Merchant Dictionary (Immediate & Free)
-DUTCH_MERCHANTS = {
-    "ALBERT HEIJN": "Needs (Food)", "JUMBO": "Needs (Food)", "LIDL": "Needs (Food)",
-    "NS-GROEP": "Needs (Transport)", "SHELL": "Needs (Transport)", "ESSO": "Needs (Transport)",
-    "BOL.COM": "Wants (Shopping)", "COOLBLUE": "Wants (Shopping)", "AMAZON": "Wants (Shopping)",
-    "DEGIRO": "Capital Growth", "MEESMAN": "Capital Growth", "TIKKIE": "Peer Transfer",
-    "NETFLIX": "Wants (Sub)", "SPOTIFY": "Wants (Sub)", "THUISBEZORGD": "Wants (Dining)"
-}
+# --- FUNCTIES ---
 
-# --- 2. THE SELF-HEALING MAPPER ---
-def get_universal_df(df):
-    """
-    Correctly maps Dutch bank headers to a standard format.
-    Prevents the 'IBAN-as-Date' shift seen in Rabobank exports.
-    """
-    # Common Dutch headers found in Rabo, ING, and ABN
-    date_options = ['Datum', 'Transactiedatum', 'Date']
-    amount_options = ['Bedrag', 'Transactiebedrag', 'Amount', 'Bedrag (EUR)']
-    desc_options = ['Naam tegenpartij', 'Naam / Omschrijving', 'Omschrijving', 'Description']
-
-    # Find the right columns based on name match
-    found_date = next((c for c in df.columns if c in date_options), df.columns[0])
-    found_amount = next((c for c in df.columns if c in amount_options), df.columns[2] if len(df.columns) > 2 else df.columns[1])
-    found_desc = next((c for c in df.columns if c in desc_options), df.columns[1])
-
-    clean_df = df[[found_date, found_desc, found_amount]].copy()
-    clean_df.columns = ['Date', 'Description', 'Amount']
-    return clean_df
-
-# --- 3. BATCH CATEGORIZATION ENGINE ---
-def process_batches(client, df):
-    results = []
-    batch_size = 15 # Optimal for speed
+def train_and_save_model(data):
+    """Traint een model op basis van handmatig gecategoriseerde data."""
+    # We gebruiken 'Description' als input en 'Category' als doel
+    X = data['Description'].astype(str)
+    y = data['Category'].astype(str)
     
-    progress_bar = st.progress(0)
-    status_text = st.empty()
+    # De Pipeline bundelt tekstverwerking en het algoritme
+    model = Pipeline([
+        ('tfidf', TfidfVectorizer(ngram_range=(1, 2))), # Kijkt naar woorden en woordcombinaties
+        ('clf', RandomForestClassifier(n_estimators=100, random_state=42))
+    ])
+    
+    model.fit(X, y)
+    joblib.dump(model, MODEL_FILE) # Sla het model op voor later gebruik
+    return model
 
-    for i in range(0, len(df), batch_size):
-        batch = df.iloc[i:i+batch_size]
+def load_model():
+    """Laadt het model van de harde schijf als het bestaat."""
+    if os.path.exists(MODEL_FILE):
+        return joblib.load(MODEL_FILE)
+    return None
+
+# --- FRONTEND UI ---
+
+st.title("🔮 AI Transactie Voorspeller")
+st.write("Stap 1: Leer de AI jouw gewoontes. Stap 2: Laat de AI nieuwe data categoriseren.")
+
+tab1, tab2 = st.tabs(["🧠 Model Trainen", "🚀 Voorspellingen Doen"])
+
+with tab1:
+    st.header("Leerfase")
+    st.write("Upload een CSV die je al een keer handmatig hebt gecategoriseerd.")
+    
+    train_file = st.file_uploader("Upload Trainingsdata (CSV met 'Description' en 'Category')", type="csv", key="train")
+    
+    if train_file:
+        df_train = pd.read_csv(train_file)
+        if st.button("Start Leerproces"):
+            with st.spinner("De AI bestudeert je uitgaven..."):
+                train_and_save_model(df_train)
+                st.success("Klaar! De AI begrijpt nu hoe jij je geld uitgeeft.")
+
+with tab2:
+    st.header("Voorspelfase")
+    model = load_model()
+    
+    if model is None:
+        st.warning("⚠️ Je moet eerst een model trainen in de eerste tab voordat je kunt voorspellen.")
+    else:
+        new_file = st.file_uploader("Upload Nieuwe Transacties (CSV)", type="csv", key="predict")
         
-        # Update Progress
-        progress = (i + batch_size) / len(df)
-        progress_bar.progress(min(progress, 1.0))
-        status_text.text(f"Analyzing batch {i//batch_size + 1}...")
-
-        # Prepare batch for AI
-        batch_json = batch.to_json(orient="records")
-        prompt = f"Categorize these Dutch transactions into [Needs, Wants, Growth, Income]: {batch_json}. Return ONLY a JSON list: [{{'Category': '...'}}]"
-
-        try:
-            chat = client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile",
-                response_format={"type": "json_object"}
-            )
-            ai_results = json.loads(chat.choices[0].message.content).get("transactions", [])
+        if new_file:
+            df_new = pd.read_csv(new_file)
             
-            for idx, row in enumerate(batch.to_dict('records')):
-                # Check local dictionary first for 100% accuracy
-                local_cat = next((cat for m, cat in DUTCH_MERCHANTS.items() if m in str(row['Description']).upper()), None)
-                final_cat = local_cat if local_cat else ai_results[idx].get("Category", "Lifestyle")
-                results.append({**row, "Category": final_cat})
-        except:
-            for row in batch.to_dict('records'):
-                results.append({**row, "Category": "Manual Check Required"})
-
-    progress_bar.empty()
-    status_text.empty()
-    return pd.DataFrame(results)
-
-# --- 4. FRONTEND ---
-st.title("🏦 Universal Bank Categorizer (2026 Edition)")
-
-if "GROQ_API_KEY" in st.secrets:
-    client = Groq(api_key=st.secrets["GROQ_API_KEY"])
-else:
-    st.error("Add your GROQ_API_KEY to Secrets first!")
-    st.stop()
-
-file = st.file_uploader("Upload Bank CSV", type="csv")
-
-if file:
-    raw_df = pd.read_csv(file)
-    with st.expander("Step 1: Raw Data Check"):
-        st.dataframe(raw_df.head(5), width="stretch") # Fixed 2026 warning
-
-    if st.button("🚀 Run Universal Categorizer"):
-        # Step 1: Map columns correctly
-        mapped_df = get_universal_df(raw_df)
-        
-        # Step 2: Batch process for speed
-        final_results = process_batches(client, mapped_df)
-        
-        st.success("Analysis Complete!")
-        # Use width='stretch' to avoid the 2026 warning
-        st.dataframe(final_results, width="stretch") 
-        
-        csv = final_results.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Download Final Report", csv, "wealth_report.csv")
+            # Hier gebruiken we de 'Description' kolom van de nieuwe data
+            if st.button("Voorspel Categorieën"):
+                # De AI doet de voorspelling
+                predictions = model.predict(df_new['Description'].astype(str))
+                df_new['AI_Categorie'] = predictions
+                
+                st.success("Voorspelling voltooid!")
+                st.dataframe(df_new, width="stretch") # 2026 syntax
+                
+                # Download knop voor het resultaat
+                csv = df_new.to_csv(index=False).encode('utf-8')
+                st.download_button("Download Gecategoriseerde CSV", csv, "voorspellingen.csv", "text/csv")
