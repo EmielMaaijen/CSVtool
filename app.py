@@ -7,7 +7,7 @@ import joblib
 import os
 
 # --- 1. CONFIGURATIE & OPTIES ---
-st.set_page_config(page_title="Grootboek Agent Pro", layout="wide")
+st.set_page_config(page_title="Grootboek Agent Pro 2026", layout="wide", page_icon="🏦")
 MODEL_FILE = 'trained_model.joblib'
 
 # De officiële lijst met grootboekrekeningen voor je dropdown
@@ -19,97 +19,160 @@ GROOTBOEK_OPTIES = [
     "4200 Verkoopkosten",
     "4300 Autokosten",
     "4400 Kantinekosten",
-    "4500 Reis- en verblijfwosten",
+    "4500 Reis- en verblijfkosten",
     "7000 Inkoop",
     "8000 Omzet"
 ]
 
-# --- 2. FUNCTIES ---
-
+# --- 2. DE ROBUUSTE MAPPER (VOORKOMT KEYERRORS) ---
 def standardize_df(df):
-    """Zet kolommen om naar Date, Description, Amount."""
+    """
+    Zet kolommen om naar Date, Description, Amount.
+    Als kolommen ontbreken, worden ze veilig aangemaakt.
+    """
     cols = df.columns.tolist()
-    date_opts = ['Datum', 'Date', 'Timestamp']
-    desc_opts = ['Omschrijving', 'Description', 'Counterparty']
-    amt_opts = ['Bedrag', 'Amount', 'Amount_EUR']
+    
+    # Zoek naar Date, Description en Amount opties
+    date_opts = ['Datum', 'Date', 'Timestamp', 'Transactiedatum']
+    desc_opts = ['Omschrijving', 'Description', 'Counterparty', 'Naam / Omschrijving', 'Naam tegenpartij']
+    amt_opts = ['Bedrag', 'Amount', 'Amount_EUR', 'Bedrag (EUR)']
 
-    f_date = next((c for c in cols if c in date_opts), cols[0])
-    f_desc = next((c for c in cols if c in desc_opts), cols[1])
-    f_amt = next((c for c in cols if c in amt_opts), cols[2])
+    f_date = next((c for c in cols if c in date_opts), None)
+    f_desc = next((c for c in cols if c in desc_opts), None)
+    f_amt = next((c for c in cols if c in amt_opts), None)
 
-    df_clean = df.rename(columns={f_date: 'Date', f_desc: 'Description', f_amt: 'Amount'})
-    return df_clean[['Date', 'Description', 'Amount']]
+    clean_df = pd.DataFrame()
 
+    # Datum: Gebruik gevonden datum of vul dummy in
+    if f_date:
+        clean_df['Date'] = df[f_date]
+    else:
+        clean_df['Date'] = "2026-01-12"
+
+    # Omschrijving: Zoek tekst of gebruik eerste kolom
+    if f_desc:
+        clean_df['Description'] = df[f_desc].fillna("Onbekend")
+    else:
+        clean_df['Description'] = df.iloc[:, 0].fillna("Onbekend")
+
+    # Bedrag: Zoek bedrag of gebruik 0.0
+    if f_amt:
+        # Verwijder eventuele tekst uit bedragen en zet om naar float
+        clean_df['Amount'] = pd.to_numeric(df[f_amt], errors='coerce').fillna(0.0)
+    else:
+        clean_df['Amount'] = 0.0
+
+    # Speciale ING Af/Bij afhandeling indien aanwezig
+    if 'Af Bij' in cols:
+        clean_df['Amount'] = df.apply(
+            lambda x: -abs(x[f_amt]) if x['Af Bij'] == 'Af' else abs(x[f_amt]), 
+            axis=1
+        )
+
+    # Behoud Category als die al in de CSV staat (voor training)
+    if 'Category' in df.columns:
+        clean_df['Category'] = df['Category']
+    
+    return clean_df
+
+# --- 3. MACHINE LEARNING ENGINE ---
 @st.cache_resource
 def get_pipeline():
+    """Bouwt de tekst-classificatie pipeline."""
     return Pipeline([
         ('tfidf', TfidfVectorizer(ngram_range=(1, 2))),
         ('clf', RandomForestClassifier(n_estimators=100, random_state=42))
     ])
 
-# --- 3. UI LAYOUT ---
-st.title("🏦 Slimme Grootboek Agent")
+# --- 4. STREAMLIT FRONTEND ---
+st.title("🤖 Slimme Grootboek Agent")
+st.markdown("---")
 
-tab1, tab2 = st.tabs(["🧠 Stap 1: Leerproces & Correctie", "🚀 Stap 2: Voorspellen"])
+tab1, tab2 = st.tabs(["🧠 Stap 1: Leerproces & Correctie", "🚀 Stap 2: Voorspellen & Rapportage"])
 
+# --- TAB 1: TRAINING ---
 with tab1:
-    st.header("Data Review & Training")
-    st.write("Upload je data, pas de categorieën aan waar nodig, en train de AI.")
+    st.header("Data Review & AI Training")
+    st.write("Upload je data, controleer de categorieën en train je model.")
 
-    train_file = st.file_uploader("Upload Trainingsdata (CSV)", type="csv")
+    train_file = st.file_uploader("Upload Trainingsdata (CSV)", type="csv", key="train_upload")
 
     if train_file:
         df_raw = pd.read_csv(train_file)
         df_to_review = standardize_df(df_raw)
 
-        # Voeg een Category kolom toe als die nog niet bestaat
+        # Zorg dat de kolom 'Category' altijd bestaat voor de editor
         if 'Category' not in df_to_review.columns:
-            df_to_review['Category'] = GROOTBOEK_OPTIES[0] # Default waarde
+            df_to_review['Category'] = GROOTBOEK_OPTIES[0]
 
         st.subheader("📝 Controleer en pas aan")
-        st.info("Klik op de 'Category' kolom om een grootboekrekening te kiezen.")
+        
+        # Zoekbalk filter
+        search = st.text_input("🔍 Zoek in transacties (bijv. 'Albert' of 'Factuur')")
+        display_df = df_to_review
+        if search:
+            display_df = df_to_review[df_to_review['Description'].str.contains(search, case=False)]
 
         # De Data Editor met Dropdown
         edited_df = st.data_editor(
-            df_to_review,
+            display_df,
             column_config={
                 "Category": st.column_config.SelectboxColumn(
                     "Grootboekrekening",
-                    help="Kies de juiste rekening voor deze transactie",
                     options=GROOTBOEK_OPTIES,
                     required=True,
-                )
+                ),
+                "Amount": st.column_config.NumberColumn(format="€ %.2f")
             },
             hide_index=True,
             width="stretch"
         )
 
-        if st.button("✅ Bevestig & Train Model"):
-            with st.spinner("AI wordt getraind op jouw keuzes..."):
+        if st.button("✅ Bevestig & Train AI"):
+            with st.spinner("De AI leert van jouw data..."):
+                # We trainen op de GEHELE dataset die in de editor staat
                 X = edited_df['Description'].astype(str)
                 y = edited_df['Category'].astype(str)
                 
                 model = get_pipeline()
                 model.fit(X, y)
                 joblib.dump(model, MODEL_FILE)
-                st.success("Het model is getraind en klaar voor gebruik!")
+                st.success("Het model is succesvol getraind en opgeslagen!")
 
+# --- TAB 2: PREDICTION ---
 with tab2:
-    st.header("Nieuwe Voorspellingen")
+    st.header("Automatische Voorspelling")
+    
     if not os.path.exists(MODEL_FILE):
-        st.warning("⚠️ Je moet eerst het model trainen in Tab 1.")
+        st.warning("⚠️ Geen model gevonden. Train eerst de AI in de eerste tab.")
     else:
-        predict_file = st.file_uploader("Upload nieuwe bank-export", type="csv")
+        predict_file = st.file_uploader("Upload nieuwe banktransacties", type="csv", key="predict_upload")
+        
         if predict_file:
-            df_new = pd.read_csv(predict_file)
-            df_mapped = standardize_df(df_new)
+            df_new_raw = pd.read_csv(predict_file)
+            df_mapped = standardize_df(df_new_raw)
             
             if st.button("🚀 Voorspel Grootboekrekeningen"):
-                model = joblib.load(MODEL_FILE)
-                df_mapped['Grootboekrekening'] = model.predict(df_mapped['Description'].astype(str))
-                
-                st.dataframe(df_mapped, width="stretch")
-                
-                # Export
-                csv = df_mapped.to_csv(index=False).encode('utf-8')
-                st.download_button("📥 Download Rapport", csv, "boekhouding_klaar.csv")
+                with st.spinner("AI analyseert transacties..."):
+                    model = joblib.load(MODEL_FILE)
+                    # Voorspelling op basis van Description
+                    df_mapped['Voorspelling'] = model.predict(df_mapped['Description'].astype(str))
+                    
+                    st.success("Analyse voltooid!")
+                    st.dataframe(df_mapped, width="stretch") # 2026 syntax
+                    
+                    # --- DASHBOARD ---
+                    st.divider()
+                    st.subheader("📊 Kosten per Grootboekrekening")
+                    
+                    # Alleen negatieve bedragen (kosten) tonen
+                    expenses = df_mapped[df_mapped['Amount'] < 0].copy()
+                    expenses['Amount'] = expenses['Amount'].abs()
+                    
+                    if not expenses.empty:
+                        chart_data = expenses.groupby('Voorspelling')['Amount'].sum()
+                        st.bar_chart(chart_data)
+                    
+                    # Download
+                    csv = df_mapped.to_csv(index=False).encode('utf-8')
+                    st.download_button("📥 Download Boekhoudrapport", csv, "gecategoriseerd_rapport.csv")
