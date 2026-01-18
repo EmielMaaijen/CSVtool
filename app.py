@@ -8,7 +8,7 @@ import joblib
 import os
 
 # --- 1. CONFIGURATIE ---
-st.set_page_config(page_title="Zelflerende Boekhoud Agent 2026", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Zelflerende Boekhoud Agent Pro", layout="wide", page_icon="🏦")
 MODEL_FILE = 'trained_model.joblib'
 
 # DE VOLLEDIGE LIJST MET GROOTBOEKREKENINGEN
@@ -26,6 +26,7 @@ GROOTBOEK_OPTIES = [
 ]
 
 # --- 2. GOOGLE SHEETS CONNECTIE ---
+# Maakt gebruik van de officiële Streamlit GSheets connector
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_historical_data():
@@ -53,7 +54,7 @@ def standardize_df(df):
     f_amt = next((c for c in cols if c in amt_opts), None)
 
     clean_df = pd.DataFrame()
-    clean_df['Date'] = df[f_date] if f_date else "2026-01-12"
+    clean_df['Date'] = df[f_date] if f_date else "2026-01-18"
     clean_df['Description'] = df[f_desc].fillna("Onbekend") if f_desc else df.iloc[:, 0].fillna("Onbekend")
     
     if f_amt:
@@ -75,7 +76,7 @@ def get_pipeline():
     ])
 
 # --- 5. FRONTEND UI ---
-st.title("🧠 Zelflerende Boekhoud Agent Pro")
+st.title("🤖 Slimme Grootboek Agent Pro")
 st.markdown("---")
 
 tab1, tab2 = st.tabs(["🧠 Training & Geheugen", "🚀 Voorspellingen & Dashboard"])
@@ -106,16 +107,17 @@ with tab1:
         )
 
         if st.button("💾 Opslaan & AI Trainen"):
-            with st.spinner("Data wordt opgeslagen..."):
+            with st.spinner("Data wordt opgeslagen in de cloud..."):
                 updated_history = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
                 conn.update(data=updated_history)
                 
+                # Training op de volledige historie
                 X = updated_history['Description'].astype(str)
                 y = updated_history['Category'].astype(str)
                 model = get_pipeline()
                 model.fit(X, y)
                 joblib.dump(model, MODEL_FILE)
-                st.success("AI is bijgewerkt en opgeslagen in de cloud!")
+                st.success("Data opgeslagen en AI is weer een stukje slimmer!")
 
 with tab2:
     st.header("Stap 2: Voorspellen")
@@ -123,7 +125,6 @@ with tab2:
         st.warning("⚠️ Geen kennis gevonden. Train de AI eerst in Tab 1.")
     else:
         if not os.path.exists(MODEL_FILE) and not history_df.empty:
-            # Auto-train als model ontbreekt maar data er is
             model = get_pipeline()
             model.fit(history_df['Description'].astype(str), history_df['Category'].astype(str))
             joblib.dump(model, MODEL_FILE)
