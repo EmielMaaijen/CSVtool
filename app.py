@@ -3,15 +3,13 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
-from streamlit_gsheets_connection import GSheetsConnection
 import joblib
 import os
 
 # --- 1. CONFIGURATIE ---
-st.set_page_config(page_title="Zelflerende Boekhoud Agent Pro", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Zelflerende Boekhoud Agent 2026", layout="wide", page_icon="🏦")
 MODEL_FILE = 'trained_model.joblib'
 
-# DE VOLLEDIGE LIJST MET GROOTBOEKREKENINGEN
 GROOTBOEK_OPTIES = [
     "8000 Omzet (21% BTW)", "8100 Omzet (9% BTW)", "8200 Omzet (0% / Export)", "8400 Overige opbrengsten",
     "7000 Inkoopwaarde van de omzet", "7100 Verzendkosten inkoop",
@@ -26,11 +24,10 @@ GROOTBOEK_OPTIES = [
 ]
 
 # --- 2. GOOGLE SHEETS CONNECTIE ---
-# Maakt gebruik van de officiële Streamlit GSheets connector
-conn = st.connection("gsheets", type=GSheetsConnection)
+# GEBRUIK STRING-BASED TYPE OM IMPORT FOUTEN TE VOORKOMEN
+conn = st.connection("gsheets", type="gsheets")
 
 def get_historical_data():
-    """Haalt alle eerder opgeslagen transacties op uit Google Sheets."""
     try:
         df = conn.read(ttl="1m")
         return df if df is not None and not df.empty else pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
@@ -107,17 +104,16 @@ with tab1:
         )
 
         if st.button("💾 Opslaan & AI Trainen"):
-            with st.spinner("Data wordt opgeslagen in de cloud..."):
+            with st.spinner("Data wordt opgeslagen..."):
                 updated_history = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
                 conn.update(data=updated_history)
                 
-                # Training op de volledige historie
                 X = updated_history['Description'].astype(str)
                 y = updated_history['Category'].astype(str)
                 model = get_pipeline()
                 model.fit(X, y)
                 joblib.dump(model, MODEL_FILE)
-                st.success("Data opgeslagen en AI is weer een stukje slimmer!")
+                st.success("AI is weer een stukje slimmer!")
 
 with tab2:
     st.header("Stap 2: Voorspellen")
