@@ -3,24 +3,15 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
+from streamlit_gsheets_connection import GSheetsConnection
 import joblib
 import os
-
-# --- DE CRUCIALE FIX VOOR DE IMPORT ---
-# We proberen de twee mogelijke namen waaronder de bibliotheek geïnstalleerd kan zijn
-try:
-    from streamlit_gsheets_connection import GSheetsConnection
-except ImportError:
-    try:
-        from st_gsheets_connection import GSheetsConnection
-    except ImportError:
-        st.error("Fout: De GSheets-bibliotheek kon niet worden geladen. Controleer je requirements.txt.")
-        GSheetsConnection = None
 
 # --- 1. CONFIGURATIE ---
 st.set_page_config(page_title="Zelflerende Boekhoud Agent 2026", layout="wide", page_icon="🏦")
 MODEL_FILE = 'trained_model.joblib'
 
+# LIJST MET GROOTBOEKREKENINGEN
 GROOTBOEK_OPTIES = [
     "8000 Omzet (21% BTW)", "8100 Omzet (9% BTW)", "8200 Omzet (0% / Export)", "8400 Overige opbrengsten",
     "7000 Inkoopwaarde van de omzet", "7100 Verzendkosten inkoop",
@@ -35,19 +26,11 @@ GROOTBOEK_OPTIES = [
 ]
 
 # --- 2. GOOGLE SHEETS CONNECTIE ---
-# We maken de connectie alleen aan als de import is geslaagd
-if GSheetsConnection:
-    try:
-        conn = st.connection("gsheets", type=GSheetsConnection)
-    except Exception as e:
-        st.error(f"Verbindingsfout met Google Sheets: {e}")
-        conn = None
-else:
-    conn = None
+# Officiële Streamlit methode voor verbinding
+conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_historical_data():
-    if conn is None:
-        return pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
+    """Haalt alle eerder opgeslagen transacties op uit Google Sheets."""
     try:
         df = conn.read(ttl="1m")
         if df is not None and not df.empty:
@@ -60,7 +43,7 @@ def get_historical_data():
 def standardize_df(df):
     cols = df.columns.tolist()
     date_opts = ['Datum', 'Date', 'Timestamp', 'Transactiedatum']
-    desc_opts = ['Omschrijving', 'Description', 'Counterparty', 'Naam / Omschrijving', 'Naam tegenpartij', 'Reference']
+    desc_opts = ['Omschrijving', 'Description', 'Counterparty', 'Naam / Omschrijving', 'Reference']
     amt_opts = ['Bedrag', 'Amount', 'Amount_EUR', 'Bedrag (EUR)']
 
     f_date = next((c for c in cols if c in date_opts), None)
@@ -101,7 +84,7 @@ with tab1:
     history_df = get_historical_data()
     st.info(f"Aantal transacties in AI-geheugen: **{len(history_df)}**")
 
-    train_file = st.file_uploader("Upload nieuwe data om te leren (CSV)", type="csv", key="train_up")
+    train_file = st.file_uploader("Upload nieuwe data om te leren (CSV)", type="csv")
 
     if train_file:
         raw_data = pd.read_csv(train_file)
@@ -122,19 +105,16 @@ with tab1:
         )
 
         if st.button("💾 Opslaan & AI Trainen"):
-            if conn:
-                with st.spinner("Data wordt opgeslagen..."):
-                    updated_history = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
-                    conn.update(data=updated_history)
-                    
-                    X = updated_history['Description'].astype(str)
-                    y = updated_history['Category'].astype(str)
-                    model = get_pipeline()
-                    model.fit(X, y)
-                    joblib.dump(model, MODEL_FILE)
-                    st.success("AI is weer een stukje slimmer!")
-            else:
-                st.error("Kan niet opslaan: Geen verbinding met Google Sheets.")
+            with st.spinner("Data wordt opgeslagen..."):
+                updated_history = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
+                conn.update(data=updated_history)
+                
+                X = updated_history['Description'].astype(str)
+                y = updated_history['Category'].astype(str)
+                model = get_pipeline()
+                model.fit(X, y)
+                joblib.dump(model, MODEL_FILE)
+                st.success("AI is weer een stukje slimmer!")
 
 with tab2:
     st.header("Stap 2: Voorspellen")
@@ -146,7 +126,7 @@ with tab2:
             model.fit(history_df['Description'].astype(str), history_df['Category'].astype(str))
             joblib.dump(model, MODEL_FILE)
 
-        predict_file = st.file_uploader("Upload bankbestand voor analyse", type="csv", key="pred_up")
+        predict_file = st.file_uploader("Upload bankbestand voor analyse", type="csv", key="pred")
         if predict_file:
             df_new_raw = pd.read_csv(predict_file)
             df_mapped = standardize_df(df_new_raw)
