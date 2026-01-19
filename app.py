@@ -6,18 +6,10 @@ from sklearn.pipeline import Pipeline
 import joblib
 import os
 
-# --- DE DEFINITIEVE IMPORT FIX ---
-# Voor versie 0.1.0 (die de server kiest) is dit de juiste naam
-try:
-    from st_gsheets_connection import GSheetsConnection
-except ImportError:
-    from streamlit_gsheets_connection import GSheetsConnection
-
 # --- 1. CONFIGURATIE ---
 st.set_page_config(page_title="Zelflerende Boekhoud Agent Pro", layout="wide", page_icon="🏦")
 MODEL_FILE = 'trained_model.joblib'
 
-# DE VOLLEDIGE LIJST MET GROOTBOEKREKENINGEN
 GROOTBOEK_OPTIES = [
     "8000 Omzet (21% BTW)", "8100 Omzet (9% BTW)", "8200 Omzet (0% / Export)", "8400 Overige opbrengsten",
     "7000 Inkoopwaarde van de omzet", "7100 Verzendkosten inkoop",
@@ -32,17 +24,19 @@ GROOTBOEK_OPTIES = [
 ]
 
 # --- 2. GOOGLE SHEETS CONNECTIE ---
-# Verbinding maken via de geïmporteerde klasse
-conn = st.connection("gsheets", type=GSheetsConnection)
+# We gebruiken de string "gsheets" zodat Streamlit zelf de bibliotheek zoekt
+try:
+    conn = st.connection("gsheets", type="gsheets")
+except Exception as e:
+    st.error(f"Kan geen verbinding maken: {e}")
+    conn = None
 
 def get_historical_data():
-    """Haalt alle eerder opgeslagen transacties op uit Google Sheets."""
+    if conn is None: return pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
     try:
         df = conn.read(ttl="1m")
-        if df is not None and not df.empty:
-            return df
-        return pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
-    except Exception:
+        return df if df is not None and not df.empty else pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
+    except:
         return pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
 
 # --- 3. DATA NORMALISATIE ---
@@ -51,94 +45,47 @@ def standardize_df(df):
     date_opts = ['Datum', 'Date', 'Timestamp', 'Transactiedatum']
     desc_opts = ['Omschrijving', 'Description', 'Counterparty', 'Naam / Omschrijving', 'Reference']
     amt_opts = ['Bedrag', 'Amount', 'Amount_EUR', 'Bedrag (EUR)']
-
     f_date = next((c for c in cols if c in date_opts), None)
-    if 'Counterparty' in cols and 'Reference' in cols:
-        df['Combined_Desc'] = df['Counterparty'].fillna('') + " " + df['Reference'].fillna('')
-        f_desc = 'Combined_Desc'
-    else:
-        f_desc = next((c for c in cols if c in desc_opts), None)
-    
+    f_desc = next((c for c in cols if c in desc_opts), None)
     f_amt = next((c for c in cols if c in amt_opts), None)
-
     clean_df = pd.DataFrame()
     clean_df['Date'] = df[f_date] if f_date else "2026-01-19"
-    clean_df['Description'] = df[f_desc].fillna("Onbekend") if f_desc else df.iloc[:, 0].fillna("Onbekend")
+    clean_df['Description'] = df[f_desc].fillna("Onbekend") if f_desc else "Onbekend"
     clean_df['Amount'] = pd.to_numeric(df[f_amt], errors='coerce').fillna(0.0) if f_amt else 0.0
-    
-    if 'Category' in df.columns:
-        clean_df['Category'] = df['Category']
-    
+    if 'Category' in df.columns: clean_df['Category'] = df['Category']
     return clean_df
 
-# --- 4. MACHINE LEARNING ENGINE ---
+# --- 4. MACHINE LEARNING ---
 @st.cache_resource
 def get_pipeline():
-    return Pipeline([
-        ('tfidf', TfidfVectorizer(ngram_range=(1, 2))),
-        ('clf', RandomForestClassifier(n_estimators=100, random_state=42))
-    ])
+    return Pipeline([('tfidf', TfidfVectorizer(ngram_range=(1, 2))), ('clf', RandomForestClassifier(n_estimators=100))])
 
-# --- 5. FRONTEND UI ---
-st.title("🤖 Slimme Grootboek Agent Pro")
-st.markdown("---")
-
-tab1, tab2 = st.tabs(["🧠 Training & Geheugen", "🚀 Voorspellingen & Dashboard"])
+# --- 5. UI ---
+st.title("🤖 Boekhoud Agent Pro")
+tab1, tab2 = st.tabs(["🧠 Training", "🚀 Voorspellen"])
 
 with tab1:
-    st.header("Stap 1: Review & Leerproces")
     history_df = get_historical_data()
-    st.info(f"Aantal transacties in AI-geheugen: **{len(history_df)}**")
-
-    train_file = st.file_uploader("Upload data om te leren (CSV)", type="csv", key="train_up")
-
+    st.info(f"AI-geheugen: {len(history_df)} transacties")
+    train_file = st.file_uploader("Upload CSV", type="csv", key="tr")
     if train_file:
-        raw_data = pd.read_csv(train_file)
-        df_to_review = standardize_df(raw_data)
-
-        if 'Category' not in df_to_review.columns:
-            df_to_review['Category'] = GROOTBOEK_OPTIES[0]
-
-        st.subheader("📝 Controleer en pas aan")
-        edited_df = st.data_editor(
-            df_to_review,
-            column_config={
-                "Category": st.column_config.SelectboxColumn("Grootboek", options=GROOTBOEK_OPTIES, required=True),
-                "Amount": st.column_config.NumberColumn(format="€ %.2f")
-            },
-            hide_index=True,
-            width="stretch"
-        )
-
-        if st.button("💾 Opslaan & AI Trainen"):
-            with st.spinner("Data wordt opgeslagen..."):
-                updated_history = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
-                conn.update(data=updated_history)
-                
-                X = updated_history['Description'].astype(str)
-                y = updated_history['Category'].astype(str)
-                model = get_pipeline()
-                model.fit(X, y)
-                joblib.dump(model, MODEL_FILE)
-                st.success("AI is bijgewerkt!")
+        df_to_review = standardize_df(pd.read_csv(train_file))
+        if 'Category' not in df_to_review.columns: df_to_review['Category'] = GROOTBOEK_OPTIES[0]
+        edited_df = st.data_editor(df_to_review, column_config={"Category": st.column_config.SelectboxColumn("Grootboek", options=GROOTBOEK_OPTIES)}, hide_index=True)
+        if st.button("💾 Opslaan & Trainen"):
+            updated = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
+            conn.update(data=updated)
+            model = get_pipeline()
+            model.fit(updated['Description'].astype(str), updated['Category'].astype(str))
+            joblib.dump(model, MODEL_FILE)
+            st.success("Klaar!")
 
 with tab2:
-    st.header("Stap 2: Voorspellen")
-    if not os.path.exists(MODEL_FILE) and history_df.empty:
-        st.warning("⚠️ Geen kennis gevonden. Train de AI eerst.")
-    else:
-        if not os.path.exists(MODEL_FILE) and not history_df.empty:
-            model = get_pipeline()
-            model.fit(history_df['Description'].astype(str), history_df['Category'].astype(str))
-            joblib.dump(model, MODEL_FILE)
-
-        predict_file = st.file_uploader("Upload bankbestand voor analyse", type="csv", key="pred_up")
+    if os.path.exists(MODEL_FILE):
+        predict_file = st.file_uploader("Analyseer bestand", type="csv", key="pr")
         if predict_file:
-            df_new_raw = pd.read_csv(predict_file)
-            df_mapped = standardize_df(df_new_raw)
-            
-            if st.button("🚀 Voorspel Grootboekrekeningen"):
+            df_new = standardize_df(pd.read_csv(predict_file))
+            if st.button("🚀 Start Analyse"):
                 model = joblib.load(MODEL_FILE)
-                df_mapped['AI_Voorspelling'] = model.predict(df_mapped['Description'].astype(str))
-                st.success("Analyse voltooid!")
-                st.dataframe(df_mapped, width="stretch")
+                df_new['AI_Voorspelling'] = model.predict(df_new['Description'].astype(str))
+                st.dataframe(df_new)
