@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+from streamlit_gsheets import GSheetsConnection
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
@@ -26,7 +27,7 @@ GROOTBOEK_OPTIES = [
 # --- 2. GOOGLE SHEETS CONNECTIE ---
 # We gebruiken de string "gsheets" zodat Streamlit zelf de bibliotheek zoekt
 try:
-    conn = st.connection("gsheets", type="gsheets")
+    conn = st.connection("gsheets", type=GSheetsConnection)
 except Exception as e:
     st.error(f"Kan geen verbinding maken: {e}")
     conn = None
@@ -89,3 +90,4 @@ with tab2:
                 model = joblib.load(MODEL_FILE)
                 df_new['AI_Voorspelling'] = model.predict(df_new['Description'].astype(str))
                 st.dataframe(df_new)
+
