@@ -1,5 +1,5 @@
-streamlit>=1.30.0
+streamlit
 pandas
 scikit-learn
 joblib
-st-gsheets-connection @ git+https://github.com/streamlit/gsheets-connection.git
+st-gsheets-connection
