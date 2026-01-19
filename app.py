@@ -20,6 +20,7 @@ GROOTBOEK_OPTIES = [
     "4300 Brandstof & Laden", "4310 Onderhoud & Reparaties Auto", "4320 Parkeerkosten", "4330 Openbaar Vervoer & Taxi",
     "4400 Bankkosten & Transactiefees", "4410 Verzekeringen (Zakelijk)", "4420 Advieskosten (Boekhouder/Juridisch)",
     "4430 Kantinekosten & Lunches", "4440 Studiekosten & Training",
+    "4500 Brutolonen / Salarissen", "4510 Sociale lasten (Loonheffing)", "4520 Pensioenpremies", "4530 Overige personeelskosten (WKR)",
     "0000 Inventaris & Apparatuur", "1000 Bank / Kruisposten", "1400 BTW Afdracht / Ontvangst",
     "1600 Crediteuren (Openstaande facturen)", "2000 Privéstortingen", "2010 Privéopnamen"
 ]
@@ -90,4 +91,5 @@ with tab2:
                 model = joblib.load(MODEL_FILE)
                 df_new['AI_Voorspelling'] = model.predict(df_new['Description'].astype(str))
                 st.dataframe(df_new)
+
 
