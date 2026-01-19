@@ -6,21 +6,21 @@ from sklearn.pipeline import Pipeline
 import joblib
 import os
 
-# --- FAILSAFE IMPORT VOOR GSHEETS ---
-# Dit probeert beide namen van de module om importfouten te voorkomen
+# --- DE CRUCIALE FIX VOOR DE IMPORT ---
+# We proberen de twee mogelijke namen waaronder de bibliotheek geïnstalleerd kan zijn
 try:
     from streamlit_gsheets_connection import GSheetsConnection
 except ImportError:
     try:
         from st_gsheets_connection import GSheetsConnection
     except ImportError:
-        st.error("Fout: GSheets bibliotheek niet gevonden. Controleer requirements.txt.")
+        st.error("Fout: De GSheets-bibliotheek kon niet worden geladen. Controleer je requirements.txt.")
+        GSheetsConnection = None
 
 # --- 1. CONFIGURATIE ---
 st.set_page_config(page_title="Zelflerende Boekhoud Agent 2026", layout="wide", page_icon="🏦")
 MODEL_FILE = 'trained_model.joblib'
 
-# DE VOLLEDIGE LIJST MET GROOTBOEKREKENINGEN
 GROOTBOEK_OPTIES = [
     "8000 Omzet (21% BTW)", "8100 Omzet (9% BTW)", "8200 Omzet (0% / Export)", "8400 Overige opbrengsten",
     "7000 Inkoopwaarde van de omzet", "7100 Verzendkosten inkoop",
@@ -35,14 +35,19 @@ GROOTBOEK_OPTIES = [
 ]
 
 # --- 2. GOOGLE SHEETS CONNECTIE ---
-# Gebruik de directe Class-import voor maximale stabiliteit
-try:
-    conn = st.connection("gsheets", type=GSheetsConnection)
-except Exception as e:
-    st.error(f"Verbindingsfout met Google Sheets: {e}")
+# We maken de connectie alleen aan als de import is geslaagd
+if GSheetsConnection:
+    try:
+        conn = st.connection("gsheets", type=GSheetsConnection)
+    except Exception as e:
+        st.error(f"Verbindingsfout met Google Sheets: {e}")
+        conn = None
+else:
+    conn = None
 
 def get_historical_data():
-    """Haalt alle eerder opgeslagen transacties op uit Google Sheets."""
+    if conn is None:
+        return pd.DataFrame(columns=['Date', 'Description', 'Amount', 'Category'])
     try:
         df = conn.read(ttl="1m")
         if df is not None and not df.empty:
@@ -70,11 +75,7 @@ def standardize_df(df):
     clean_df = pd.DataFrame()
     clean_df['Date'] = df[f_date] if f_date else "2026-01-19"
     clean_df['Description'] = df[f_desc].fillna("Onbekend") if f_desc else df.iloc[:, 0].fillna("Onbekend")
-    
-    if f_amt:
-        clean_df['Amount'] = pd.to_numeric(df[f_amt], errors='coerce').fillna(0.0)
-    else:
-        clean_df['Amount'] = 0.0
+    clean_df['Amount'] = pd.to_numeric(df[f_amt], errors='coerce').fillna(0.0) if f_amt else 0.0
     
     if 'Category' in df.columns:
         clean_df['Category'] = df['Category']
@@ -84,7 +85,6 @@ def standardize_df(df):
 # --- 4. MACHINE LEARNING ENGINE ---
 @st.cache_resource
 def get_pipeline():
-    """Bouwt de AI-pipeline voor tekstclassificatie."""
     return Pipeline([
         ('tfidf', TfidfVectorizer(ngram_range=(1, 2))),
         ('clf', RandomForestClassifier(n_estimators=100, random_state=42))
@@ -122,16 +122,19 @@ with tab1:
         )
 
         if st.button("💾 Opslaan & AI Trainen"):
-            with st.spinner("Data wordt opgeslagen..."):
-                updated_history = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
-                conn.update(data=updated_history)
-                
-                X = updated_history['Description'].astype(str)
-                y = updated_history['Category'].astype(str)
-                model = get_pipeline()
-                model.fit(X, y)
-                joblib.dump(model, MODEL_FILE)
-                st.success("AI is weer een stukje slimmer!")
+            if conn:
+                with st.spinner("Data wordt opgeslagen..."):
+                    updated_history = pd.concat([history_df, edited_df], ignore_index=True).drop_duplicates()
+                    conn.update(data=updated_history)
+                    
+                    X = updated_history['Description'].astype(str)
+                    y = updated_history['Category'].astype(str)
+                    model = get_pipeline()
+                    model.fit(X, y)
+                    joblib.dump(model, MODEL_FILE)
+                    st.success("AI is weer een stukje slimmer!")
+            else:
+                st.error("Kan niet opslaan: Geen verbinding met Google Sheets.")
 
 with tab2:
     st.header("Stap 2: Voorspellen")
