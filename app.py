@@ -3,12 +3,18 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
-from streamlit_gsheets_connection import GSheetsConnection
 import joblib
 import os
 
+# DE FIX: Probeer beide mogelijke namen van de bibliotheek
+try:
+    from streamlit_gsheets_connection import GSheetsConnection
+except ImportError:
+    from st_gsheets_connection import GSheetsConnection
+
 # --- 1. CONFIGURATIE ---
-st.set_page_config(page_title="Zelflerende Boekhoud Agent Pro", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Zelflerende Boekhoud Agent 2026", layout="wide", page_icon="🏦")
+# ... de rest van je code blijft exact hetzelfde
 MODEL_FILE = 'trained_model.joblib'
 
 # DE VOLLEDIGE LIJST MET GROOTBOEKREKENINGEN
@@ -160,3 +166,4 @@ with tab2:
                 # Exporteer resultaat naar CSV voor boekhouding
                 csv = df_mapped.to_csv(index=False).encode('utf-8')
                 st.download_button("📥 Download Rapport", csv, "ai_voorspelling_rapport.csv")
+
