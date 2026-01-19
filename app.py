@@ -60,7 +60,25 @@ def standardize_df(df):
 # --- 4. MACHINE LEARNING ---
 @st.cache_resource
 def get_pipeline():
-    return Pipeline([('tfidf', TfidfVectorizer(ngram_range=(1, 2))), ('clf', RandomForestClassifier(n_estimators=100))])
+    # Woorden die overal in de boekhouding staan maar niks zeggen over de categorie
+    ruis_woorden = [
+        'mei', 'juni', 'april', 'maart', 'februari', 'januari', 
+        'maandelijkse', 'incasso', 'betaling', 'via', 'voor', 'het', 'de', 'van'
+    ]
+
+    return Pipeline([
+        ('tfidf', TfidfVectorizer(
+            ngram_range=(1, 2),        # Kijkt naar 'Salaris' én 'Salaris betaling'
+            stop_words=ruis_woorden,   # Negeert de maanden en lidwoorden
+            use_idf=True,              # Geeft unieke woorden (zoals 'Salaris') extra kracht
+            sublinear_tf=True          # Zorgt dat 'kantoor' niet alles overheerst
+        )),
+        ('clf', RandomForestClassifier(
+            n_estimators=250,          # Genoeg beslisbomen voor complexiteit
+            class_weight='balanced',   # Geeft extra aandacht aan kleine categorieën (zoals Pensioen)
+            random_state=42
+        ))
+    ])
 
 # --- 5. UI ---
 st.title("🤖 Boekhoud Agent Pro")
@@ -91,5 +109,6 @@ with tab2:
                 model = joblib.load(MODEL_FILE)
                 df_new['AI_Voorspelling'] = model.predict(df_new['Description'].astype(str))
                 st.dataframe(df_new)
+
 
 
