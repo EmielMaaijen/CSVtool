@@ -3,15 +3,21 @@ import pandas as pd
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
-from streamlit_gsheets_connection import GSheetsConnection
 import joblib
 import os
 
+# --- DE DEFINITIEVE IMPORT FIX ---
+# Voor versie 0.1.0 (die de server kiest) is dit de juiste naam
+try:
+    from st_gsheets_connection import GSheetsConnection
+except ImportError:
+    from streamlit_gsheets_connection import GSheetsConnection
+
 # --- 1. CONFIGURATIE ---
-st.set_page_config(page_title="Zelflerende Boekhoud Agent 2026", layout="wide", page_icon="🏦")
+st.set_page_config(page_title="Zelflerende Boekhoud Agent Pro", layout="wide", page_icon="🏦")
 MODEL_FILE = 'trained_model.joblib'
 
-# LIJST MET GROOTBOEKREKENINGEN
+# DE VOLLEDIGE LIJST MET GROOTBOEKREKENINGEN
 GROOTBOEK_OPTIES = [
     "8000 Omzet (21% BTW)", "8100 Omzet (9% BTW)", "8200 Omzet (0% / Export)", "8400 Overige opbrengsten",
     "7000 Inkoopwaarde van de omzet", "7100 Verzendkosten inkoop",
@@ -26,7 +32,7 @@ GROOTBOEK_OPTIES = [
 ]
 
 # --- 2. GOOGLE SHEETS CONNECTIE ---
-# Officiële Streamlit methode voor verbinding
+# Verbinding maken via de geïmporteerde klasse
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def get_historical_data():
@@ -84,7 +90,7 @@ with tab1:
     history_df = get_historical_data()
     st.info(f"Aantal transacties in AI-geheugen: **{len(history_df)}**")
 
-    train_file = st.file_uploader("Upload nieuwe data om te leren (CSV)", type="csv")
+    train_file = st.file_uploader("Upload data om te leren (CSV)", type="csv", key="train_up")
 
     if train_file:
         raw_data = pd.read_csv(train_file)
@@ -97,7 +103,7 @@ with tab1:
         edited_df = st.data_editor(
             df_to_review,
             column_config={
-                "Category": st.column_config.SelectboxColumn("Grootboekrekening", options=GROOTBOEK_OPTIES, required=True),
+                "Category": st.column_config.SelectboxColumn("Grootboek", options=GROOTBOEK_OPTIES, required=True),
                 "Amount": st.column_config.NumberColumn(format="€ %.2f")
             },
             hide_index=True,
@@ -114,19 +120,19 @@ with tab1:
                 model = get_pipeline()
                 model.fit(X, y)
                 joblib.dump(model, MODEL_FILE)
-                st.success("AI is weer een stukje slimmer!")
+                st.success("AI is bijgewerkt!")
 
 with tab2:
     st.header("Stap 2: Voorspellen")
     if not os.path.exists(MODEL_FILE) and history_df.empty:
-        st.warning("⚠️ Geen kennis gevonden. Voeg eerst data toe in Tab 1.")
+        st.warning("⚠️ Geen kennis gevonden. Train de AI eerst.")
     else:
         if not os.path.exists(MODEL_FILE) and not history_df.empty:
             model = get_pipeline()
             model.fit(history_df['Description'].astype(str), history_df['Category'].astype(str))
             joblib.dump(model, MODEL_FILE)
 
-        predict_file = st.file_uploader("Upload bankbestand voor analyse", type="csv", key="pred")
+        predict_file = st.file_uploader("Upload bankbestand voor analyse", type="csv", key="pred_up")
         if predict_file:
             df_new_raw = pd.read_csv(predict_file)
             df_mapped = standardize_df(df_new_raw)
