@@ -1,11 +1,14 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
+import io
+import csv
+
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.pipeline import Pipeline
+
 from streamlit_gsheets import GSheetsConnection
-import io
 
 # -----------------------------
 # 1) CONFIGURATIE
@@ -13,8 +16,11 @@ import io
 st.set_page_config(
     page_title="Boekhoud Agent Pro",
     layout="wide",
-    page_icon="🏦"
+    page_icon="🏦",
 )
+
+SHEET_NAME = "Boekhouding_Data"
+REQUIRED_COLS = ["Date", "Description", "Amount", "Category"]
 
 GROOTBOEK_OPTIES = [
     "8000 Omzet (21% BTW)", "8100 Omzet (9% BTW)", "8200 Omzet (0% / Export)", "8400 Overige opbrengsten",
@@ -27,7 +33,7 @@ GROOTBOEK_OPTIES = [
     "4430 Kantinekosten & Lunches", "4440 Studiekosten & Training",
     "4500 Brutolonen / Salarissen", "4510 Sociale lasten (Loonheffing)", "4520 Pensioenpremies", "4530 Overige personeelskosten (WKR)",
     "0000 Inventaris & Apparatuur", "1000 Bank / Kruisposten", "1400 BTW Afdracht / Ontvangst",
-    "1600 Crediteuren (Openstaande facturen)", "2000 Privéstortingen", "2010 Privéopnamen"
+    "1600 Crediteuren (Openstaande facturen)", "2000 Privéstortingen", "2010 Privéopnamen",
 ]
 
 # -----------------------------
@@ -39,69 +45,140 @@ def get_conn():
 
 def get_historical_data(conn: GSheetsConnection) -> pd.DataFrame:
     """
-    Haal trainings-/historische data op uit Google Sheets.
-    Verwachte kolommen (minimaal): Date, Description, Amount, Category
+    Lees historische/gelabelde transacties uit Google Sheets (worksheet: SHEET_NAME).
     """
     try:
-        df = conn.read(ttl="30s")
+        df = conn.read(worksheet=SHEET_NAME, ttl="30s")
         if df is None or df.empty:
-            return pd.DataFrame(columns=["Date", "Description", "Amount", "Category"])
+            return pd.DataFrame(columns=REQUIRED_COLS)
         return df
     except Exception:
-        return pd.DataFrame(columns=["Date", "Description", "Amount", "Category"])
+        return pd.DataFrame(columns=REQUIRED_COLS)
 
 # -----------------------------
-# 3) DATA NORMALISATIE
+# 3) ROBUUST CSV INLEZEN (UPLOADS)
 # -----------------------------
+def read_csv_smart(uploaded_file) -> pd.DataFrame:
+    """
+    Robuuste CSV reader voor exports met:
+    - delimiter detectie (, of ;)
+    - fallback naar python-engine
+    - skip van corrupte regels i.p.v. crashen
+    """
+    raw = uploaded_file.getvalue()
+
+    sample = raw[:4096].decode("utf-8", errors="ignore")
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=";,")
+        sep = dialect.delimiter
+    except Exception:
+        sep = ";" if sample.count(";") > sample.count(",") else ","
+
+    # 1) snelle C-engine poging
+    try:
+        return pd.read_csv(
+            io.BytesIO(raw),
+            sep=sep,
+            engine="c",
+            dtype=str,
+            encoding="utf-8",
+        )
+    except Exception:
+        # 2) fallback: python-engine + bad lines skip
+        return pd.read_csv(
+            io.BytesIO(raw),
+            sep=sep,
+            engine="python",
+            dtype=str,
+            encoding="utf-8",
+            on_bad_lines="skip",
+        )
+
+# -----------------------------
+# 4) DATA NORMALISATIE / SCHEMA
+# -----------------------------
+def ensure_schema(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Dwing het schema af: Date, Description, Amount, Category
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=REQUIRED_COLS)
+
+    # voeg ontbrekende kolommen toe
+    for c in REQUIRED_COLS:
+        if c not in df.columns:
+            df[c] = "" if c != "Amount" else 0.0
+
+    df = df[REQUIRED_COLS].copy()
+
+    # types
+    df["Date"] = df["Date"].astype(str)
+    df["Description"] = df["Description"].fillna("Onbekend").astype(str)
+
+    # Amount: accepteer "1.234,56" en "1234.56"
+    amt = df["Amount"].astype(str).str.replace(" ", "", regex=False)
+    # als er comma-decimaal is, vervang dan duizendtallen en zet comma naar punt
+    # (heuristiek: als er zowel '.' als ',' in zit -> '.' is thousand sep)
+    mask = amt.str.contains(",") & amt.str.contains(r"\.", regex=True)
+    amt = amt.where(~mask, amt.str.replace(".", "", regex=False))
+    amt = amt.str.replace(",", ".", regex=False)
+
+    df["Amount"] = pd.to_numeric(amt, errors="coerce").fillna(0.0)
+    df["Category"] = df["Category"].fillna("").astype(str)
+
+    return df
+
 def standardize_df(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Normaliseer uploads (met variabele kolomnamen) naar minimaal Date/Description/Amount (+ Category indien aanwezig).
+    """
+    if df is None or df.empty:
+        return pd.DataFrame(columns=["Date", "Description", "Amount"])
+
     cols = df.columns.tolist()
-    date_opts = ['Datum', 'Date', 'Timestamp', 'Transactiedatum']
-    desc_opts = ['Omschrijving', 'Description', 'Counterparty', 'Naam / Omschrijving', 'Reference']
-    amt_opts  = ['Bedrag', 'Amount', 'Amount_EUR', 'Bedrag (EUR)']
+    date_opts = ["Datum", "Date", "Timestamp", "Transactiedatum"]
+    desc_opts = ["Omschrijving", "Description", "Counterparty", "Naam / Omschrijving", "Reference"]
+    amt_opts = ["Bedrag", "Amount", "Amount_EUR", "Bedrag (EUR)"]
 
     f_date = next((c for c in cols if c in date_opts), None)
     f_desc = next((c for c in cols if c in desc_opts), None)
-    f_amt  = next((c for c in cols if c in amt_opts), None)
+    f_amt = next((c for c in cols if c in amt_opts), None)
 
     clean = pd.DataFrame()
     clean["Date"] = df[f_date] if f_date else pd.Timestamp.today().date().isoformat()
     clean["Description"] = df[f_desc].fillna("Onbekend").astype(str) if f_desc else "Onbekend"
-    clean["Amount"] = pd.to_numeric(df[f_amt], errors="coerce").fillna(0.0) if f_amt else 0.0
+    clean["Amount"] = df[f_amt] if f_amt else 0.0
 
-    # Category alleen als aanwezig; anders later opvangen
     if "Category" in df.columns:
-        clean["Category"] = df["Category"].astype(str)
+        clean["Category"] = df["Category"]
+
     return clean
 
 def df_fingerprint(df: pd.DataFrame) -> str:
     """
-    Stabiele hash voor caching (zodat we alleen retrainen als de sheets-data wijzigt).
+    Stabiele hash voor caching (retrain alleen bij wijziging sheets-data).
     """
     if df is None or df.empty:
         return "EMPTY"
-    # Hash op relevante kolommen
-    cols = [c for c in ["Date", "Description", "Amount", "Category"] if c in df.columns]
-    tmp = df[cols].copy()
-    # Zorg dat types consistent zijn
+    tmp = df[REQUIRED_COLS].copy()
     for c in tmp.columns:
         tmp[c] = tmp[c].astype(str)
     h = pd.util.hash_pandas_object(tmp, index=False).sum()
     return f"{len(tmp)}-{h}"
 
 # -----------------------------
-# 4) MACHINE LEARNING (AUTO-TRAIN)
+# 5) MACHINE LEARNING (AUTO-TRAIN)
 # -----------------------------
 def build_pipeline():
     return Pipeline([
         ("tfidf", TfidfVectorizer(ngram_range=(1, 2))),
-        ("clf", RandomForestClassifier(n_estimators=200, random_state=42))
+        ("clf", RandomForestClassifier(n_estimators=200, random_state=42)),
     ])
 
 @st.cache_resource
 def train_model_cached(fingerprint: str, descriptions: tuple, categories: tuple):
     """
-    Cache op fingerprint; model wordt opnieuw getraind zodra sheets-data verandert.
-    We geven tuples mee omdat Streamlit caching hashable inputs nodig heeft.
+    Cache op fingerprint; retrain zodra sheets-data verandert.
     """
     model = build_pipeline()
     model.fit(list(descriptions), list(categories))
@@ -111,15 +188,9 @@ def get_or_train_model(history_df: pd.DataFrame):
     """
     Train automatisch op basis van sheets-data.
     """
-    if history_df is None or history_df.empty:
-        return None, "Geen historische data gevonden in Google Sheets."
+    hist = ensure_schema(history_df)
 
-    hist = standardize_df(history_df)
-
-    if "Category" not in hist.columns:
-        return None, "Kolom 'Category' ontbreekt in Google Sheets; kan geen model trainen."
-
-    # Filter op bruikbare labels
+    # filter op gelabelde data
     hist = hist.dropna(subset=["Description", "Category"])
     hist = hist[hist["Description"].astype(str).str.len() > 0]
     hist = hist[hist["Category"].astype(str).str.len() > 0]
@@ -129,24 +200,22 @@ def get_or_train_model(history_df: pd.DataFrame):
 
     fp = df_fingerprint(hist)
     descriptions = tuple(hist["Description"].astype(str).tolist())
-    categories   = tuple(hist["Category"].astype(str).tolist())
+    categories = tuple(hist["Category"].astype(str).tolist())
 
     model = train_model_cached(fp, descriptions, categories)
     return model, None
 
 # -----------------------------
-# 5) UI - NAVIGATIE
+# 6) UI - NAVIGATIE
 # -----------------------------
 st.title("🤖 Boekhoud Agent Pro")
 
-# Analyse standaard bovenaan; Training/Beheer bewust ‘achterin’.
 page = st.sidebar.radio(
     "Navigatie",
     ["🚀 Analyse", "📊 Dashboard", "⚙️ Training & Beheer"],
-    index=0
+    index=0,
 )
 
-# Handige onderhoudsknop
 with st.sidebar.expander("Onderhoud", expanded=False):
     if st.button("Clear cache / force refresh"):
         st.cache_data.clear()
@@ -155,29 +224,26 @@ with st.sidebar.expander("Onderhoud", expanded=False):
 
 # Connectie & data ophalen
 conn = get_conn()
-history_df = get_historical_data(conn)
+history_df = ensure_schema(get_historical_data(conn))
 
 # -----------------------------
-# 6) PAGINA: ANALYSE (DEFAULT)
+# 7) PAGINA: ANALYSE (DEFAULT)
 # -----------------------------
 if page == "🚀 Analyse":
     st.subheader("Analyse / Voorspellen (always-on)")
 
     colA, colB = st.columns([2, 1])
     with colA:
-        st.caption("Upload een CSV om grootboek-categorieën te voorspellen op basis van je historiek in Google Sheets.")
+        st.caption("Upload een CSV om grootboek-categorieën te voorspellen op basis van historiek in Google Sheets.")
     with colB:
         st.info(f"AI-geheugen: {len(history_df)} transacties in Sheets")
 
-    # Model altijd automatisch trainen (gecached)
     model, model_err = get_or_train_model(history_df)
     if model_err:
         st.warning(model_err)
 
-    # Upload input voor analyse
     predict_file = st.file_uploader("Upload CSV voor analyse", type="csv", key="predict")
 
-    # Extra: snelle single-transaction analyse (optioneel)
     with st.expander("Snelle check (1 transactie)", expanded=False):
         one_desc = st.text_input("Omschrijving", value="")
         one_amt = st.number_input("Bedrag (EUR)", value=0.0, step=1.0)
@@ -189,11 +255,14 @@ if page == "🚀 Analyse":
                 st.success(f"Voorspelling: {pred}")
 
     if predict_file is not None:
-        df_new_raw = pd.read_csv(predict_file)
+        df_new_raw = read_csv_smart(predict_file)
         df_new = standardize_df(df_new_raw)
+        df_new = ensure_schema(pd.concat([df_new, pd.DataFrame(columns=["Category"])], axis=1))  # dwing Date/Desc/Amount
+        # Category is irrelevant voor analyse; we zetten hem leeg
+        df_new["Category"] = ""
 
         st.write("Ingelezen bestand (gestandaardiseerd):")
-        st.dataframe(df_new, use_container_width=True)
+        st.dataframe(df_new[["Date", "Description", "Amount"]], use_container_width=True)
 
         if st.button("🚀 Start Analyse", type="primary"):
             if model is None:
@@ -201,20 +270,21 @@ if page == "🚀 Analyse":
             else:
                 df_out = df_new.copy()
                 df_out["AI_Voorspelling"] = model.predict(df_out["Description"].astype(str))
+
                 st.success("Analyse afgerond.")
-                st.dataframe(df_out, use_container_width=True)
+                st.dataframe(df_out[["Date", "Description", "Amount", "AI_Voorspelling"]], use_container_width=True)
 
                 # Download knop (nieuw CSV)
-                csv_bytes = df_out.to_csv(index=False).encode("utf-8")
+                csv_bytes = df_out[["Date", "Description", "Amount", "AI_Voorspelling"]].to_csv(index=False).encode("utf-8")
                 st.download_button(
                     label="⬇️ Download resultaat als CSV",
                     data=csv_bytes,
                     file_name="analyse_output.csv",
-                    mime="text/csv"
+                    mime="text/csv",
                 )
 
 # -----------------------------
-# 7) PAGINA: DASHBOARD
+# 8) PAGINA: DASHBOARD
 # -----------------------------
 elif page == "📊 Dashboard":
     st.subheader("Dashboard (KPI’s)")
@@ -222,21 +292,18 @@ elif page == "📊 Dashboard":
     if history_df is None or history_df.empty:
         st.warning("Geen data beschikbaar in Google Sheets.")
     else:
-        hist = standardize_df(history_df)
-
-        # Date parsing (defensief)
+        hist = history_df.copy()
         hist["Date_parsed"] = pd.to_datetime(hist["Date"], errors="coerce")
+
         last_date = hist["Date_parsed"].max()
         last_date_str = last_date.date().isoformat() if pd.notna(last_date) else "Onbekend"
 
-        # KPI berekeningen
         total_tx = len(hist)
         total_abs = float(hist["Amount"].abs().sum()) if "Amount" in hist.columns else 0.0
         avg_amt = float(hist["Amount"].mean()) if "Amount" in hist.columns and total_tx > 0 else 0.0
         pos_tx = int((hist["Amount"] > 0).sum()) if "Amount" in hist.columns else 0
         neg_tx = int((hist["Amount"] < 0).sum()) if "Amount" in hist.columns else 0
 
-        # Laatste 30 dagen (als dates ok zijn)
         if pd.notna(last_date):
             cutoff = last_date - pd.Timedelta(days=30)
             last30 = hist[hist["Date_parsed"] >= cutoff]
@@ -257,57 +324,54 @@ elif page == "📊 Dashboard":
         k7.metric("Transacties (30d)", f"{tx_30}")
         k8.metric("Volume (30d, abs)", f"€ {vol_30:,.2f}")
 
-        # Distributie categorieën
-        if "Category" in hist.columns:
-            st.markdown("### Categorieverdeling")
-            cat_counts = hist["Category"].fillna("Onbekend").value_counts().head(20)
-            st.bar_chart(cat_counts)
+        st.markdown("### Categorieverdeling (Top 20)")
+        cat_counts = hist["Category"].fillna("Onbekend").value_counts().head(20)
+        st.bar_chart(cat_counts)
 
-        # Top beschrijvingen (indicatie leveranciers/tegenpartijen)
-        st.markdown("### Top omschrijvingen (frequentie)")
+        st.markdown("### Top omschrijvingen (Top 15)")
         top_desc = hist["Description"].fillna("Onbekend").value_counts().head(15).reset_index()
         top_desc.columns = ["Description", "Count"]
         st.dataframe(top_desc, use_container_width=True)
 
 # -----------------------------
-# 8) PAGINA: TRAINING & BEHEER (WEGGESTOPT)
+# 9) PAGINA: TRAINING & BEHEER (WEGGESTOPT)
 # -----------------------------
 else:
     st.subheader("Training & Beheer (optioneel)")
-    st.caption("Gebruik dit alleen om gelabelde data toe te voegen/te corrigeren. Het model traint automatisch bij Analyse.")
+    st.caption("Gebruik dit alleen om gelabelde data toe te voegen/te corrigeren. Analyse traint automatisch met Sheets.")
 
     st.info(f"AI-geheugen: {len(history_df)} transacties in Sheets")
 
     with st.expander("➕ Upload en label transacties (voor modelverbetering)", expanded=False):
         train_file = st.file_uploader("Upload CSV met nieuwe transacties", type="csv", key="train")
-        if train_file is not None:
-            df_to_review = standardize_df(pd.read_csv(train_file))
 
+        if train_file is not None:
+            raw = read_csv_smart(train_file)
+            df_to_review = standardize_df(raw)
+
+            # Zorg dat Category bestaat voor labeling
             if "Category" not in df_to_review.columns:
                 df_to_review["Category"] = GROOTBOEK_OPTIES[0]
+
+            # Dwing schema en types af
+            df_to_review = ensure_schema(df_to_review)
 
             edited_df = st.data_editor(
                 df_to_review,
                 column_config={
                     "Category": st.column_config.SelectboxColumn(
                         "Grootboek",
-                        options=GROOTBOEK_OPTIES
+                        options=GROOTBOEK_OPTIES,
                     )
                 },
                 hide_index=True,
-                use_container_width=True
+                use_container_width=True,
             )
 
             if st.button("💾 Opslaan naar Sheets", type="primary"):
-                # Merge + dedupe (let op: simplistic; kan je later aanscherpen met unieke keys)
-                hist = history_df.copy() if history_df is not None else pd.DataFrame()
-                updated = pd.concat([hist, edited_df], ignore_index=True)
-
-                # Dedupe op kernvelden als aanwezig
-                for c in ["Date", "Description", "Amount", "Category"]:
-                    if c not in updated.columns:
-                        updated[c] = np.nan
+                updated = pd.concat([history_df, edited_df], ignore_index=True)
+                updated = ensure_schema(updated)
                 updated = updated.drop_duplicates(subset=["Date", "Description", "Amount", "Category"])
 
-                conn.update(data=updated)
-                st.success("Opgeslagen. De Analyse-pagina traint automatisch met de nieuwe data.")
+                conn.update(worksheet=SHEET_NAME, data=updated)
+                st.success("Opgeslagen. Analyse traint automatisch met de nieuwe data.")
